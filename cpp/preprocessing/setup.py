@@ -1,0 +1,17 @@
+from setuptools import setup, Extension
+import pybind11
+
+ext_modules = [
+    Extension(
+        'inferx_preprocess',
+        ['preprocess.cpp'],
+        include_dirs=[pybind11.get_include()],
+        language='c++'
+    ),
+]
+
+setup(
+    name='inferx_preprocess',
+    version='0.1.0',
+    ext_modules=ext_modules,
+)

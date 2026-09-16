@@ -1,0 +1,32 @@
+server:
+  host: "0.0.0.0"
+  port: 8000
+
+redis:
+  url: "redis://localhost:6379"
+
+postgres:
+  url: "postgresql://postgres:postgres@localhost:5432/inferx"
+
+routing:
+  latency_weight: 0.4
+  accuracy_weight: 0.3
+  health_weight: 0.2
+  load_weight: 0.1
+
+slo:
+  p95_ms: 50
+  p99_ms: 100
+  error_rate: 0.01
+
+batching:
+  enabled: true
+  max_batch_size: 16
+  max_wait_ms: 5
+
+canary:
+  percentage: 5
+
+rollback:
+  latency_multiplier: 1.25
+  max_error_rate: 0.02
