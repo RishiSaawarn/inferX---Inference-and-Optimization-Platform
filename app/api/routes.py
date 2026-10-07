@@ -8,6 +8,9 @@ from app.cache.cache import ResponseCache
 from app.resilience.retry import with_retry
 from app.resilience.fallback import execute_with_fallback
 from app.core.exceptions import BudgetExceeded
+from app.inference.preprocessing import preprocess_request
+from app.inference.postprocessing import postprocess_output
+from app.core.profiler import RequestProfiler
 
 logger = logging.getLogger(__name__)
 
@@ -53,20 +56,30 @@ async def predict(request: Request, payload: InferenceRequest):
     if not hasattr(app_state, "batch_scheduler"):
         raise HTTPException(status_code=503, detail="Scheduler not initialized")
         
+    profiler = RequestProfiler()
+        
     # Execute with resilience patterns
     try:
         # Define the execution block to be retried/fallback
         async def _do_inference():
+            with profiler.measure("preprocessing"):
+                # Run CPU-bound preprocessing in threadpool if it blocks, but here we just call it directly for now or assume it's fast
+                tensor_input = preprocess_request(payload.input_data)
+                
             exec_start = time.monotonic()
-            raw_result = await app_state.batch_scheduler.predict_async(model_id, payload.input_data)
+            raw_result = await app_state.batch_scheduler.predict_async(model_id, tensor_input)
             exec_ms = (time.monotonic() - exec_start) * 1000.0
-            return raw_result, exec_ms
+            
+            with profiler.measure("postprocessing"):
+                final_result = postprocess_output(raw_result)
+                
+            return final_result, exec_ms
             
         async def _fallback(exc: Exception):
             RESILIENCE_EVENTS.labels(model_id=model_id, type="fallback").inc()
             logger.warning(f"Fallback triggered for {model_id} due to {exc}")
             # Mock fallback result
-            return {"class": "fallback", "score": 0.0}, 0.0
+            return [{"class_id": 0, "score": 0.0}], 0.0
             
         # Protect with retry and fallback
         result_tuple = await execute_with_fallback(
@@ -74,7 +87,7 @@ async def predict(request: Request, payload: InferenceRequest):
             fallback_func=_fallback
         )
         
-        raw_result, exec_ms = result_tuple
+        predictions, exec_ms = result_tuple
         
     except Exception as e:
         logger.error(f"Inference execution failed: {e}")
@@ -88,7 +101,7 @@ async def predict(request: Request, payload: InferenceRequest):
         version=best_candidate["version"],
         backend=best_candidate.get("runtime", "unknown"),
         precision=best_candidate.get("precision", "unknown"),
-        predictions=[raw_result] if isinstance(raw_result, dict) else [{"class": "unknown", "score": 1.0}],
+        predictions=predictions,
         timings=InferenceTimings(
             queue_ms=0.0,
             exec_ms=exec_ms,
