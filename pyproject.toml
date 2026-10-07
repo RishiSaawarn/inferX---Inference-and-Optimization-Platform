@@ -6,30 +6,35 @@ build-backend = "setuptools.build_meta"
 name = "inferx"
 version = "0.1.0"
 description = "Production AI Inference & Optimization Platform"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 dependencies = [
-    "fastapi",
-    "uvicorn[standard]",
-    "pydantic",
-    "pydantic-settings",
-    "torch",
-    "torchvision",
-    "onnx",
-    "onnxruntime",
-    "redis",
-    "psycopg2-binary",
-    "prometheus-client",
-    "opentelemetry-api",
-    "opentelemetry-sdk",
-    "opentelemetry-instrumentation-fastapi",
-    "pyyaml"
+    "fastapi>=0.100,<1.0",
+    "uvicorn[standard]>=0.23,<1.0",
+    "pydantic>=2.0,<3.0",
+    "pydantic-settings>=2.0,<3.0",
+    "torch>=2.0,<3.0",
+    "torchvision>=0.15,<1.0",
+    "onnx>=1.14,<2.0",
+    "onnxruntime>=1.15,<2.0",
+    "redis>=5.0,<6.0",
+    "psycopg2-binary>=2.9,<3.0",
+    "prometheus-client>=0.17,<1.0",
+    "opentelemetry-api>=1.20,<2.0",
+    "opentelemetry-sdk>=1.20,<2.0",
+    "opentelemetry-instrumentation-fastapi>=0.40b0",
+    "pyyaml>=6.0,<7.0",
+    "numpy>=1.24,<2.0",
+    "requests>=2.31,<3.0",
+    "pybind11>=2.11,<3.0",
+    "pillow>=10.0,<11.0",
+    "python-multipart>=0.0.6,<0.1.0"
 ]
 
 [project.scripts]
 inferx = "app.cli:main"
 
-[tool.setuptools]
-packages = ["app"]
+[tool.setuptools.packages.find]
+include = ["app*"]
 
 [project.optional-dependencies]
 dev = [
@@ -52,3 +57,13 @@ line-length = 88
 [tool.mypy]
 python_version = "3.10"
 ignore_missing_imports = true
+check_untyped_defs = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "--cov=app --cov-report=term-missing"
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "model: marks tests that require downloading model weights"
+]

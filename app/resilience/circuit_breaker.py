@@ -1,13 +1,15 @@
+import logging
 import time
 from enum import Enum
-import logging
 
 logger = logging.getLogger(__name__)
+
 
 class CircuitState(Enum):
     CLOSED = "CLOSED"
     OPEN = "OPEN"
     HALF_OPEN = "HALF_OPEN"
+
 
 class CircuitBreaker:
     def __init__(self, failure_threshold: int = 5, recovery_timeout: float = 30.0):
@@ -19,7 +21,10 @@ class CircuitBreaker:
 
     def record_failure(self):
         self.failures += 1
-        if self.state == CircuitState.CLOSED and self.failures >= self.failure_threshold:
+        if (
+            self.state == CircuitState.CLOSED
+            and self.failures >= self.failure_threshold
+        ):
             self.state = CircuitState.OPEN
             self.last_failure_time = time.time()
             logger.warning("Circuit breaker OPEN")

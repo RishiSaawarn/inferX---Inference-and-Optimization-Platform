@@ -1,7 +1,10 @@
-from typing import Any, Dict
+from typing import Any
+
 import numpy as np
 import onnxruntime as ort
+
 from app.inference.base import InferenceBackend
+
 
 class ONNXBackend(InferenceBackend):
     def __init__(self, model_path: str, device: str = "cpu"):
@@ -10,10 +13,13 @@ class ONNXBackend(InferenceBackend):
         self.session = None
 
     def load(self) -> None:
-        providers = ['CPUExecutionProvider']
-        if self.device == 'cuda' and 'CUDAExecutionProvider' in ort.get_available_providers():
-            providers = ['CUDAExecutionProvider'] + providers
-            
+        providers = ["CPUExecutionProvider"]
+        if (
+            self.device == "cuda"
+            and "CUDAExecutionProvider" in ort.get_available_providers()
+        ):
+            providers = ["CUDAExecutionProvider"] + providers
+
         self.session = ort.InferenceSession(self.model_path, providers=providers)
 
     def warmup(self) -> None:
@@ -25,7 +31,7 @@ class ONNXBackend(InferenceBackend):
         # Handle dynamic batch size
         shape = [dim if isinstance(dim, int) else 1 for dim in input_shape]
         dummy_input = np.random.randn(*shape).astype(np.float32)
-        
+
         for _ in range(3):
             self.session.run(None, {input_name: dummy_input})
 
@@ -39,7 +45,7 @@ class ONNXBackend(InferenceBackend):
                 input_data = input_data.numpy()
             except AttributeError:
                 input_data = np.array(input_data, dtype=np.float32)
-        
+
         output = self.session.run(None, {input_name: input_data})
         return output[0]
 
@@ -49,10 +55,10 @@ class ONNXBackend(InferenceBackend):
     def health(self) -> str:
         return "HEALTHY" if self.session is not None else "STARTING"
 
-    def metadata(self) -> Dict[str, Any]:
+    def metadata(self) -> dict[str, Any]:
         return {
             "model_path": self.model_path,
             "runtime": "onnxruntime",
             "device": self.device,
-            "providers": self.session.get_providers() if self.session else []
+            "providers": self.session.get_providers() if self.session else [],
         }

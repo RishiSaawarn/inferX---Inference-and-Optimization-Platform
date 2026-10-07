@@ -1,10 +1,10 @@
 import time
-from typing import Dict
+
 
 class Profiler:
     def __init__(self):
-        self.timings: Dict[str, float] = {}
-        self._starts: Dict[str, float] = {}
+        self.timings: dict[str, float] = {}
+        self._starts: dict[str, float] = {}
         self.start_time = time.perf_counter()
 
     def start(self, segment: str):
@@ -16,7 +16,7 @@ class Profiler:
             self.timings[segment] = self.timings.get(segment, 0.0) + elapsed * 1000.0
             del self._starts[segment]
 
-    def get_results(self) -> Dict[str, float]:
+    def get_results(self) -> dict[str, float]:
         total = (time.perf_counter() - self.start_time) * 1000.0
         results = {"request_total_ms": round(total, 2)}
         for k, v in self.timings.items():

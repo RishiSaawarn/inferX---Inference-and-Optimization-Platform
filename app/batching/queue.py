@@ -1,9 +1,10 @@
 import asyncio
-import time
 import logging
-from typing import List, Dict, Any
+import time
+from typing import Any
 
 logger = logging.getLogger(__name__)
+
 
 class BatchQueue:
     def __init__(self, backend, max_batch_size: int, max_wait_ms: int):
@@ -35,7 +36,7 @@ class BatchQueue:
                 req, future = await self.queue.get()
                 batch.append(req)
                 futures.append(future)
-                
+
                 # Try to gather more items up to max_batch_size
                 deadline = time.time() + self.max_wait_ms
                 while len(batch) < self.max_batch_size:
@@ -43,32 +44,36 @@ class BatchQueue:
                     if timeout <= 0:
                         break
                     try:
-                        req, future = await asyncio.wait_for(self.queue.get(), timeout=timeout)
+                        req, future = await asyncio.wait_for(
+                            self.queue.get(), timeout=timeout
+                        )
                         batch.append(req)
                         futures.append(future)
                     except asyncio.TimeoutError:
                         break
-                        
+
                 if batch:
                     # Execute batch
                     try:
-                        import torch
                         import numpy as np
-                        
+                        import torch
+
                         if isinstance(batch[0], torch.Tensor):
                             batched_input = torch.cat(batch, dim=0)
                         elif isinstance(batch[0], np.ndarray):
                             batched_input = np.concatenate(batch, axis=0)
                         else:
                             batched_input = batch
-                            
+
                         loop = asyncio.get_event_loop()
-                        results = await loop.run_in_executor(None, self.backend.predict, batched_input)
-                        
+                        results = await loop.run_in_executor(
+                            None, self.backend.predict, batched_input
+                        )
+
                         # Dispatch results
                         for i, future in enumerate(futures):
                             if not future.done():
-                                future.set_result(results[i:i+1])
+                                future.set_result(results[i : i + 1])
                     except Exception as e:
                         logger.error(f"Batch processing error: {e}")
                         for future in futures:
@@ -80,6 +85,7 @@ class BatchQueue:
                 logger.error(f"Queue error: {e}")
 
     async def enqueue(self, request_data: Any) -> Any:
-        future = asyncio.Future()
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[Any] = loop.create_future()
         await self.queue.put((request_data, future))
         return await future

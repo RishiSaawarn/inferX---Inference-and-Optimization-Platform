@@ -1,6 +1,6 @@
 import argparse
-import sys
 import subprocess
+
 
 def main():
     parser = argparse.ArgumentParser(description="InferX CLI")
@@ -9,12 +9,12 @@ def main():
     # Models commands
     models_parser = subparsers.add_parser("models")
     models_sub = models_parser.add_subparsers(dest="subcommand")
-    
+
     models_sub.add_parser("list")
-    
+
     benchmark_parser = models_sub.add_parser("benchmark")
     benchmark_parser.add_argument("model_name")
-    
+
     models_sub.add_parser("export")
     models_sub.add_parser("quantize")
 
@@ -68,6 +68,7 @@ def main():
             print("Initiating rollback...")
     else:
         parser.print_help()
+
 
 if __name__ == "__main__":
     main()

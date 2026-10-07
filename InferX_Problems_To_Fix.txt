@@ -1,0 +1,874 @@
+================================================================================
+INFERX -- COMPLETE PROBLEM LIST (WHAT TO FIX, WHY, AND HOW)
+Repository: RishiSaawarn/inferX---Inference-and-Optimization-Platform
+Commit reviewed: 98febf7
+================================================================================
+
+HOW TO USE THIS DOCUMENT
+------------------------
+* Problems are grouped by priority, then numbered (P0-1, P1-3 ...). Work top
+  to bottom; each block is self-contained.
+* Every problem has: WHERE (file:line) / WHAT / WHY IT MATTERS / FIX /
+  VERIFY (how to prove it is fixed).
+* Evidence tags:
+    [RAN]  I executed code and observed the failure.
+    [READ] Found by reading the source; reasoning is exact but I did not run it
+           (e.g., needs a GPU, Postgres, or torch weights).
+* Effort tags: S = under 30 min, M = 30-120 min, L = 2+ hours.
+* Section 12 is a suggested order of work (a 1-day plan and a 3-day plan).
+* Section 13 is a single flat checklist you can tick off.
+
+PRIORITY LEGEND
+  P0  Credibility blockers: visible to anyone who opens the repo. Fix first.
+  P1  Core functionality missing: the "platform" does not exist until these
+      are done.
+  P2  Correctness bugs inside the components.
+  P3  Robustness, security, performance hardening.
+  P4  Quality, tests, docs, polish.
+
+SUMMARY TABLE
+  P0  Build/CI/packaging/README honesty ............. 9 problems
+  P1  Integration (wire the components together) .... 10 problems
+  P2  Component correctness bugs .................... 17 problems
+  P3  Robustness / security / performance ........... 14 problems
+  P4  Tests / docs / tooling / hygiene .............. 13 problems
+  Total ............................................. 63 problems
+
+
+================================================================================
+P0 -- CREDIBILITY BLOCKERS (fix these before anything else)
+================================================================================
+
+P0-1  Docker build fails                                        [RAN]  Effort S
+WHERE   Dockerfile lines 5-8
+WHAT    `COPY pyproject.toml .` then `RUN pip install -e .` happens BEFORE
+        `COPY . .`. pyproject declares packages=["app"], but the app/ directory
+        does not exist yet at that layer.
+        Observed error: "package directory 'app' does not exist".
+WHY     `docker-compose up --build` (the README quick start) cannot succeed, and
+        the docker.yml workflow fails on every push.
+FIX     Either
+          (a) COPY the source first:   COPY . .   then   RUN pip install .
+          (b) or split dependency install from project install. Best practice:
+              keep a requirements.txt (pinned), `pip install -r requirements.txt`
+              in an early cached layer, then `COPY . .` and `pip install --no-deps .`.
+VERIFY  `docker build -t inferx:test .` exits 0; container starts and
+        `curl localhost:8000/health` returns {"status":"ok",...}.
+
+P0-2  CI would fail: ruff                                       [RAN]  Effort S
+WHERE   .github/workflows/ci.yml (step "Lint with ruff")
+WHAT    `ruff check .` reports 103 errors (49 auto-fixable). Typical: unused
+        imports (e.g., numpy/pytest in tests, `List`, `Any`), unused variables.
+WHY     Red CI badge on the first commit. Reviewers look at this.
+FIX     `ruff check . --fix`, then fix the rest by hand (some need
+        --unsafe-fixes; review each). Remove dead imports instead of
+        suppressing them.
+VERIFY  `ruff check .` prints "All checks passed!".
+
+P0-3  CI would fail: black                                      [RAN]  Effort S
+WHERE   ci.yml step "Format with black"
+WHAT    `black --check .` -> 30 of 50 files would be reformatted (trailing
+        whitespace on blank lines, quote style, line length 88).
+FIX     `black .` once; commit the reformat as its own commit.
+VERIFY  `black --check .` exits 0.
+
+P0-4  CI would fail: mypy                                       [RAN]  Effort S
+WHERE   app/inference/pytorch_backend.py:22-23, app/batching/queue.py:83
+WHAT    (1) `self.model = None` then `self.model.to(...)`/`.eval()` -> mypy:
+            "None" has no attribute. Declare `self.model: Optional[nn.Module]`
+            and use a local variable: `model = models.resnet18(...)`;
+            `model.to(...)`; `model.eval()`; `self.model = model`.
+        (2) queue.py:83 `future = asyncio.Future()` needs an annotation, and
+            should be `loop.create_future()`:
+            `future: asyncio.Future[Any] = asyncio.get_running_loop().create_future()`.
+        Also: mypy only checks bodies of annotated functions; the notes in
+        profiler.py/manager.py say bodies are unchecked. Add return annotations
+        (`-> None`) or enable `check_untyped_defs = true` in [tool.mypy].
+VERIFY  `mypy app/` -> "Success: no issues found".
+
+P0-5  Package metadata omits every subpackage                   [RAN]  Effort S
+WHERE   pyproject.toml lines 31-32 (`[tool.setuptools] packages = ["app"]`)
+WHAT    A built wheel contains ONLY app/__init__.py, app/cli.py, app/main.py.
+        app.core, app.inference, app.batching, app.routing, ... are all missing.
+        (Editable installs hide this because they point at the source dir.)
+WHY     Any non-editable install (`pip install .`, a wheel, a production image)
+        yields `ModuleNotFoundError: app.core`. The `inferx` CLI entry point and
+        uvicorn app.main:app both break.
+FIX     Use package discovery:
+          [tool.setuptools.packages.find]
+          include = ["app*"]
+        (and confirm there is an __init__.py in every package).
+VERIFY  `pip wheel . --no-deps -w /tmp/w && unzip -l /tmp/w/*.whl` lists
+        app/core/config.py, app/inference/..., etc.
+
+P0-6  Dependency list is incomplete and unpinned                [READ] Effort S
+WHERE   pyproject.toml lines 10-26
+WHAT    - No version pins/lock file => non-reproducible builds; torch's
+          torch.onnx.export API and torchvision's `pretrained=` have changed
+          across releases, so a fresh install can break the scripts.
+        - Missing runtime deps actually used: `numpy` (explicit), `requests`
+          (chaos/chaos_tests.py), `pybind11` (cpp/setup.py), `pillow`/
+          `python-multipart` (needed once you accept image uploads).
+        - `requires-python >=3.9` but CI/Docker use 3.10 and mypy is set to 3.10.
+FIX     Pin lower and upper bounds (e.g., `torch>=2.2,<3`), add missing deps,
+        generate a lock (`pip-compile` / `uv lock`), align requires-python.
+VERIFY  Fresh venv: `pip install -e .[dev]` then `make test` works with no manual
+        installs.
+
+P0-7  README makes claims the code does not support             [READ] Effort S
+WHERE   README.md (whole file)
+WHAT    Concrete mismatches (each needs either implementing or rewording):
+          1  "POST /v1/inference" -> endpoint does not exist.
+          2  Redis cache -> no cache code at all (app/cache/ is empty).
+          3  "C++ image resizing and tensor normalization" -> only x/255.
+          4  "OpenTelemetry tracing built into the request lifecycle" ->
+             setup_tracing never called; console exporter only.
+          5  "Prometheus metrics" -> defined, never recorded, no /metrics.
+          6  "Automatic rollback / canary" -> classes exist, nothing calls them.
+          7  "inferx benchmark run = heavy concurrent load test" -> prints text.
+          8  "Chaos testing framework" -> one script calling missing endpoints.
+          9  "Router uses real-time model health" -> health is never fed back.
+         10  "Validate equivalence (mean absolute difference)" -> gate is MAX diff.
+         11  Quick start: `git clone <your-repo>`; `cd inferx` (placeholder).
+         12  Models "automatically download in Docker build" -> build fails (P0-1).
+WHY     This is the single biggest interview risk (a reviewer who checks one
+        claim and finds it false discounts the rest).
+FIX     Until features exist, add a "Status" table (Implemented / In progress /
+        Planned) and move unbuilt items to a "Roadmap" section. Update the status
+        as each P1 item lands.
+VERIFY  Every sentence in README maps to code you can point at.
+
+P0-8  No benchmark numbers anywhere                             [READ] Effort M
+WHERE   README.md "Performance & Optimization"
+WHAT    The project is called an "Optimization Platform" but never shows a
+        number: FP32 vs INT8 latency, speedup from batching, accuracy drop.
+FIX     Run scripts/benchmark.py for: PyTorch FP32, ONNX FP32, ONNX INT8 at
+        batch sizes 1/4/16. Record P50/P95/P99, throughput, model file size,
+        and the hardware (CPU model, cores, RAM, library versions). Put a table
+        in the README. Report honestly even if INT8 is not faster (see P2-13).
+VERIFY  Numbers in README are reproducible by one documented command.
+
+P0-9  Repository hygiene                                        [READ] Effort S
+WHAT    - GitHub "About" empty (no description, topics, website).
+        - Single commit ("Initial commit"): no visible history of work.
+        - No LICENSE file.
+        - No .env.example although Settings reads .env.
+        - No badges (CI status).
+FIX     Add description + topics (fastapi, onnx, pytorch, model-serving,
+        inference, dynamic-batching); add a LICENSE; add .env.example; going
+        forward commit in small logical steps (feature branches + PRs) so the
+        history tells the story.
+
+
+================================================================================
+P1 -- MISSING INTEGRATION (turn components into a working service)
+================================================================================
+Background: `grep` shows no module under app/ is imported by app/main.py, and
+routing, batching, resilience, deployment, observability and models/registry are
+only imported by each other or by tests. [RAN] The running app has one endpoint,
+GET /health.
+
+P1-1  There is no inference endpoint                            [RAN]  Effort L
+WHERE   app/main.py; app/api/routes and app/api/schemas are empty packages.
+WHAT    No POST /v1/inference. Also the README request example contains NO INPUT
+        FIELD -- it lists model, latency_budget_ms, accuracy_priority, but no
+        image/tensor. The API contract is incomplete.
+FIX     Define schemas in app/api/schemas (pydantic):
+          InferenceRequest: model: str, latency_budget_ms: float (gt 0,
+            default from SLO), accuracy_priority: Literal["low","balanced","high"],
+            input: either multipart image upload or base64 string / list.
+          InferenceResponse: model, version, backend, precision, predictions
+            (top-k labels + scores), timings {queue_ms, exec_ms, total_ms},
+            cache_hit: bool, routed_to_canary: bool.
+        Route handler flow: validate -> cache -> route -> preprocess ->
+        scheduler.predict_async (under circuit breaker/retry/fallback) ->
+        postprocess (softmax, top-k) -> cache set -> metrics -> response.
+        Return correct status codes: 400 invalid input, 404 unknown model,
+        429/503 overloaded, 504 over budget/timeouts.
+VERIFY  curl -F image=@cat.jpg ... returns a labelled prediction; add an e2e test.
+
+P1-2  No application lifecycle / dependency wiring              [READ] Effort M
+WHERE   app/main.py (uses deprecated @app.on_event("startup"))
+WHAT    Nothing constructs ModelManager, BatchScheduler, ModelRegistry,
+        ModelRouter, CanaryRouter, circuit breakers, or the cache. Nothing calls
+        scheduler.shutdown().
+FIX     Use FastAPI `lifespan`:
+          startup: load config -> connect registry/cache (with retries) ->
+                   register + load + warm up backends -> create scheduler ->
+                   store on app.state.
+          shutdown: scheduler.shutdown() (resolving pending futures), unload
+                   models, close pools.
+        Inject dependencies via `Depends` reading from app.state (makes tests
+        easy: override dependencies with fakes).
+
+P1-3  No way to go from a registry row to a loaded model        [READ] Effort M
+WHERE   app/models/registry.py, app/inference/manager.py
+WHAT    The registry stores model_name/version/runtime/device/precision/
+        metadata, but there is no field for the artifact path, and nothing maps a
+        registry row to an InferenceBackend instance or a manager model_id.
+        ModelManager is keyed by an arbitrary id; the batch scheduler is keyed by
+        the same id; the router returns a registry row. These three identifiers
+        are never connected.
+FIX     Decide one canonical id, e.g. f"{model_name}:{version}". Put
+        `artifact_path` in the table (or in metadata). Write a small
+        `BackendFactory.create(row)` -> PyTorchBackend or ONNXBackend. On
+        startup load all ACTIVE rows; the router's chosen row id is used to look
+        up the loaded backend and its batch queue.
+
+P1-4  Models are never exported/quantized/registered/activated  [READ] Effort M
+WHERE   scripts/*, registry
+WHAT    The offline pipeline produces nothing the online path can use: no
+        standard output directory, no registration step, nothing ever sets
+        status='ACTIVE' (only update_status could, and nobody calls it with it).
+        The Dockerfile downloads PyTorch weights but never creates ONNX/INT8
+        files, so ONNX variants do not exist in the image.
+FIX     Add `scripts/build_models.py` (or `inferx models build`): download ->
+        export -> validate -> quantize -> benchmark -> write a JSON report ->
+        register rows with real p95_latency_ms and accuracy in metadata -> set
+        status ACTIVE only if validation passed. Run it in the Docker build (or
+        at first start) so the stack is usable from scratch. Add a seed script
+        for a demo canary tier.
+
+P1-5  Router and canary router are not composed                 [READ] Effort S
+WHERE   app/routing/router.py, app/deployment/canary.py
+WHAT    Two separate classes each query the registry and pick a model; no code
+        chooses between them. README says canary + intelligent routing both
+        happen per request.
+FIX     Define the pipeline explicitly: (1) canary decides TIER (stable/canary)
+        for the model name, (2) scorer decides VARIANT within the tier, (3)
+        filter by hard constraints (budget, health, breaker state). Implement as
+        one `select_model(request)` function; unit-test the combinations.
+
+P1-6  Metrics are defined but never recorded; no /metrics       [RAN]  Effort M
+WHERE   app/observability/metrics.py (nothing imports it); prometheus.yml
+WHAT    Prometheus scrapes api:8000/metrics -> 404. All 15 metrics stay at zero.
+FIX     Mount `prometheus_client.make_asgi_app()` at /metrics. Increment:
+          requests_total/errors_total/latency in the route handler;
+          queue_depth + batch_size + queue_latency in BatchQueue;
+          cache_hits/misses in cache layer;
+          canary_requests_total in router; rollback_total in evaluator;
+          model_health in a health-check loop;
+          slo_violations_total when total_ms > slo.p95_ms (config value is
+          currently unused).
+        Set histogram `buckets` to suit milliseconds (e.g.,
+        [.001,.0025,.005,.01,.025,.05,.1,.25,.5,1]) -- defaults start at 5 ms
+        and end at 10 s.
+VERIFY  `curl /metrics` shows non-zero counters after traffic; Grafana panel
+        shows P95 via histogram_quantile(0.95, ...).
+
+P1-7  Tracing never initialised                                 [READ] Effort S
+WHERE   app/observability/tracing.py; setup_tracing not called in main.py
+WHAT    Also uses ConsoleSpanExporter (prints spans to stdout). No custom spans
+        for route/batch/inference stages, so even if enabled it shows only the
+        automatic HTTP span.
+FIX     Call setup_tracing(app) in lifespan; use an OTLP exporter configured by
+        env (OTEL_EXPORTER_OTLP_ENDPOINT) with Jaeger/Tempo in compose; wrap
+        stages in `tracer.start_as_current_span("route")`, "batch_wait",
+        "inference". Keep the console exporter only for local debug.
+
+P1-8  Redis cache absent                                        [RAN]  Effort M
+WHERE   app/cache/ (empty); redis config only in config.py/yaml
+WHAT    README and docs/tradeoffs.md promise it; no code uses redis (grep: zero
+        imports).
+FIX     Implement `ResponseCache` (redis.asyncio): key = sha256(model_version +
+        preprocessed-input-bytes + params); value = JSON result; TTL from
+        config; invalidate (or namespace by version) when a model version
+        changes. Count hits/misses. Fail OPEN (cache outage must not take the
+        API down). Or: remove Redis from README/compose until built.
+
+P1-9  Resilience primitives are not applied to anything         [READ] Effort M
+WHERE   app/resilience/*
+WHAT    CircuitBreaker, execute_with_retry, execute_with_fallback are never used.
+        They also are not combined, per-backend breakers do not exist, and
+        model_health never reflects breaker state.
+FIX     One breaker instance per loaded model. Call path:
+          if not breaker.can_execute(): -> go to fallback (do not even try)
+          try: result = await execute(...); breaker.record_success()
+          except: breaker.record_failure(); fallback or raise
+        Feed breaker state into model_health and into routing (skip OPEN models).
+        Apply retries only for transient errors, only when the remaining latency
+        budget allows (see P2-12).
+
+P1-10 Rollback/canary have no data source or trigger            [READ] Effort L
+WHERE   app/deployment/rollback.py; nothing calls evaluate()
+WHAT    evaluate() needs stable/candidate p95 and error rate; nothing collects
+        those per version, and nothing runs the evaluation periodically.
+FIX     Keep per-version rolling windows (e.g., last N requests or last 60 s) of
+        latencies and error counts (in memory or via Prometheus queries). Run a
+        background task every few seconds that calls evaluate() when the
+        candidate has >= min_samples. On rollback: set FAILED, increment
+        rollback_total, log structured event. Add `promote` path for a healthy
+        canary (status stable). See P2-9 for statistical safeguards.
+
+
+================================================================================
+P2 -- COMPONENT CORRECTNESS BUGS
+================================================================================
+
+--- Batching (app/batching/queue.py, scheduler.py) ---
+
+P2-1  Multi-row requests corrupt results / leak data            [RAN]  Effort M
+WHERE   queue.py lines 68-71: `future.set_result(results[i:i+1])`
+WHAT    The splitter assumes every request has exactly one row. Verified: request
+        1 with 2 rows got back 1 row, and request 2 (value 5) received 2.0 (the
+        first request's leftover), i.e., one caller sees another caller's data.
+FIX     Record each request's row count when enqueued (`n = x.shape[0]`), then
+        slice by cumulative offsets:
+            offset = 0
+            for (req, fut), n in zip(items, sizes):
+                fut.set_result(results[offset:offset+n]); offset += n
+        Also enforce `max_batch_size` in ROWS, not requests.
+VERIFY  Unit test: mix of 1-, 2- and 3-row requests; assert each caller gets its
+        own outputs, in order (compare against calling the backend individually).
+
+P2-2  First-request wait is measured from dequeue, not enqueue  [READ] Effort S
+WHERE   queue.py lines 35-40
+WHAT    `deadline = time.time() + max_wait` starts after the first item is taken,
+        so time the request already spent queued (behind an in-flight batch)
+        is not counted; actual wait can exceed max_wait.
+FIX     Stamp `enqueue_time` in `enqueue()` and compute the deadline from the
+        oldest request's enqueue time.
+
+P2-3  Lone request always waits the full max_wait               [RAN]  Effort S
+WHERE   queue.py lines 41-50
+WHAT    Verified: a single request took ~51 ms with max_wait=50 ms. At the
+        configured 5 ms, every low-traffic request pays +5 ms for nothing, which
+        matters for 10-20 ms budgets.
+FIX     If the queue is empty and no batch is executing, dispatch immediately
+        ("work-conserving" batching), or only wait when concurrency > 1. Make
+        `max_wait` adaptive to the request's remaining latency budget.
+
+P2-4  Malformed input poisons the whole batch                   [READ] Effort S
+WHERE   queue.py lines 58-63
+WHAT    One request with a different shape/dtype makes torch.cat/np.concatenate
+        raise; every request in that batch receives the exception.
+FIX     Validate shape/dtype at the API boundary (and in enqueue) against the
+        model's expected input; on batch failure, retry items individually to
+        isolate the culprit.
+
+P2-5  Pending futures hang on shutdown/cancel                   [READ] Effort S
+WHERE   queue.py lines 20-27 and 77-78
+WHAT    stop() cancels the worker; items still in the queue (and the in-flight
+        batch) keep unresolved Futures, so awaiting callers hang forever.
+FIX     On stop: drain the queue and `set_exception(RuntimeError("shutting
+        down"))` on every pending future; handle CancelledError during the
+        executor await by failing that batch's futures.
+
+P2-6  Unbounded queue, no back-pressure                         [READ] Effort S
+WHERE   queue.py line 13 (`asyncio.Queue()`)
+WHAT    Under overload the queue grows without bound; latency explodes and memory
+        grows. No per-request timeout either.
+FIX     `asyncio.Queue(maxsize=N)`; on full -> immediately return 503/429
+        ("load shedding"). Add a per-request deadline: drop requests that
+        already exceeded their budget before execution.
+
+P2-7  Small code-level issues in the batcher                    [READ] Effort S
+WHERE   queue.py lines 40, 55-56, 65; scheduler.py lines 30, 34
+WHAT    - `time.time()` should be `time.monotonic()` (wall clock can jump).
+        - `import torch`/`numpy` inside the hot loop on every batch; move to
+          module level.
+        - `asyncio.get_event_loop()` is deprecated in coroutines; use
+          `get_running_loop()`.
+        - Scheduler bypass path (batching disabled) and the queue path both call
+          backend.predict directly, SKIPPING ModelManager.predict's health check.
+        - Only one batch in flight per model; no pipelining.
+        - Hard dependency on torch even for ONNX-only deployments (the import is
+          unguarded).
+
+--- Routing, registry, deployment ---
+
+P2-8  Over-budget models are not excluded                       [RAN]  Effort S
+WHERE   app/routing/scoring.py lines 10-13
+WHAT    If p95 > budget, latency_score = 0 but the model still competes; verified
+        that a 40 ms model at a 20 ms budget still scores 0.234 and can win if it
+        is the most accurate. README says "penalized or discarded".
+FIX     Hard-filter candidates whose p95 exceeds the budget (keep a "best effort"
+        fallback if the filter leaves none, and report `budget_violated: true`).
+        Then score the survivors.
+
+P2-9  Scoring ignores most of its configuration                 [READ] Effort M
+WHERE   scoring.py; router.py lines 9-12; config.yaml routing section
+WHAT    - `accuracy_priority` ("balanced"/"high"/...) is in the API example but
+          never read.
+        - `health_weight` and `load_weight` are configured but unused, so
+          "routes by health and load" is untrue.
+        - Weights are not normalised; hardcoded fallbacks (0.4/0.6) differ from
+          the YAML (0.4/0.3).
+        - p95_latency_ms/accuracy must pre-exist in metadata; defaults (50 ms,
+          0.5) silently apply when missing, so un-benchmarked models look
+          average.
+FIX     Map accuracy_priority -> weight multipliers; add health (breaker/error
+        rate) and load (queue depth / in-flight) terms; normalise weights to sum
+        to 1; log and warn when defaults are used; refuse to ACTIVATE a model
+        without benchmark metadata.
+
+P2-10 Registry connection handling                              [READ] Effort M
+WHERE   app/models/registry.py (all methods)
+WHAT    - New psycopg2 connection per call (adds ms per request; no pooling).
+        - `with psycopg2.connect(...) as conn:` commits/rolls back but does NOT
+          close the connection => connection leak under load.
+        - Errors are logged and swallowed: get_active_models returns [] on a DB
+          outage, so a database failure looks like "no models", producing
+          misleading errors.
+        - `_init_db()` runs in __init__ and swallows failures: in docker-compose
+          Postgres may not be ready yet, so the table is never created and later
+          queries fail forever.
+        - Synchronous driver called from async code blocks the event loop.
+        - `precision`, `metadata` etc. fine, but no indexes on (model_name,
+          status).
+FIX     Use a connection pool (psycopg_pool / asyncpg / SQLAlchemy async). Retry
+        init with backoff on startup (or use migrations: Alembic). Let errors
+        propagate (or return a typed error) and surface them as 503. Cache
+        ACTIVE rows in memory with a short TTL or refresh on status change
+        (LISTEN/NOTIFY) so routing does not hit the DB per request.
+
+P2-11 Canary/rollback statistics and edge cases                 [READ] Effort M
+WHERE   canary.py lines 26-32; rollback.py lines 19-27
+WHAT    - Rollback fires on one P95/error sample with no minimum sample size or
+          time window: a few slow requests can fail a good canary; with 5%
+          traffic you may take minutes to collect meaningful data.
+        - Canary comparisons ignore load differences (canary sees different
+          traffic mix/time).
+        - Error-rate check is independent of stable's error rate (a global 2%
+          threshold even if stable is at 3%).
+        - Per-request random assignment is not sticky (a user can bounce between
+          versions); a canary that is picked for batching joins a different
+          queue so batch sizes shrink.
+        - No auto-promotion; rollback only logs and flips status (no event/metric).
+FIX     Require min_samples and min_duration; compare with a confidence
+        interval (bootstrap P95, or a two-proportion test for errors); use
+        hash(user_or_session_id) % 100 < pct for stickiness; emit metrics/events;
+        add `promote()`.
+
+--- Resilience ---
+
+P2-12 Retry and fallback semantics                              [READ] Effort S
+WHERE   app/resilience/retry.py, fallback.py
+WHAT    - Retries ALL exceptions, including permanent ones (bad input, shape
+          mismatch) which can never succeed.
+        - Backoff sums to 0.7 s+ (0.1+0.2+0.4) which exceeds typical 20-100 ms
+          budgets; no deadline awareness.
+        - Jitter is only +0..10% of the delay; "full jitter" (Uniform(0, delay))
+          de-synchronises clients far better.
+        - No retry budget => retry storms during an outage.
+        - Fallback catches every exception, logs only the string, emits no
+          metric, and can mask bugs.
+FIX     Retry only an allow-list (TimeoutError, transient runtime errors); pass
+        the remaining budget and stop when exhausted; use full jitter; cap retry
+        ratio; count fallbacks in a metric and annotate the response
+        (`fallback_used: true`).
+
+P2-13 Circuit breaker details                                   [RAN]  Effort S
+WHERE   app/resilience/circuit_breaker.py
+WHAT    - HALF_OPEN lets EVERY request through (verified two consecutive
+          can_execute() calls both True) although the comment says "allow one
+          request"; a recovering backend gets flooded.
+        - `time.time()` instead of `time.monotonic()`.
+        - Not thread-safe; failure counter has no time window (consecutive
+          failures hours apart still trip it).
+        - Counts any exception equally (client errors vs server errors).
+FIX     Track `half_open_in_flight` and allow a small number of probes
+        (e.g., 1-3), require N successes to close, use monotonic time, add a lock
+        if used across threads, and only count backend/server failures.
+VERIFY  Test the full state machine with a fake clock.
+
+--- Inference / optimisation pipeline ---
+
+P2-14 ONNX input dtype and GPU tensor handling                  [READ] Effort S
+WHERE   app/inference/onnx_backend.py lines 36-41
+WHAT    A float64 ndarray (NumPy's default) is passed straight to ORT, which
+        raises "Unexpected input data type" (model expects float32). A CUDA torch
+        tensor makes `.numpy()` fail (needs `.cpu()`).
+FIX     `x = np.ascontiguousarray(x, dtype=np.float32)`; for tensors
+        `.detach().cpu().numpy()`. Validate shape against
+        `session.get_inputs()[0].shape`. For CUDA use IO binding to avoid copies.
+
+P2-15 PyTorch backend limitations                               [READ] Effort S
+WHERE   app/inference/pytorch_backend.py
+WHAT    - Models hard-coded in an if/elif chain (only mobilenet_v3_small,
+          resnet18).
+        - `pretrained=True` is deprecated (use `weights=...`) and can be removed
+          in future torchvision releases.
+        - No torch thread control: with the default executor, several concurrent
+          forward passes oversubscribe CPU cores (`torch.set_num_threads`).
+        - Does not use `torch.inference_mode()` (slightly faster than no_grad).
+        - health() never reflects runtime failures.
+FIX     Model-factory registry (dict name -> constructor + weights enum), set
+        threads explicitly, use inference_mode, and let health() reflect recent
+        errors/breaker state. Also set ORT SessionOptions (intra_op_num_threads,
+        graph_optimization_level) for fair benchmarks.
+
+P2-16 Export / quantize / benchmark scripts                     [READ] Effort M
+WHERE   scripts/export_onnx.py, quantize.py, benchmark.py
+WHAT    Export:
+          - Validates on ONE random input at batch 1, though the point of
+            dynamic_axes is batching. Test several batch sizes and real images.
+          - No `onnx.checker.check_model`; opset 14 is old; newer torch versions
+            change the default exporter behaviour (pin torch or pass explicit
+            options).
+          - Gate uses max diff while README says mean diff; compare top-1/top-5
+            agreement too.
+          - Uses builtin `exit(1)` instead of `sys.exit(1)`.
+        Quantize:
+          - Dynamic quantization often gives little/no speedup on convolutional
+            nets; static (QDQ) quantization with calibration is the usual choice.
+          - No `quant_pre_process`, no accuracy evaluation after quantization
+            (top-1 on a validation subset), so the router's "accuracy" metadata
+            has no real source.
+        Benchmark:
+          - Closed-loop, concurrency 1; "req/s" actually counts samples.
+          - Prints only; no JSON/CSV output to feed the registry.
+          - For PyTorch on CUDA it passes a numpy array (the PyTorch backend
+            raises TypeError for non-tensors), so GPU benchmarking of PyTorch
+            fails.
+          - No sweep over batch sizes/threads; no warmup count option.
+FIX     Implement as listed; write results to benchmarks/<model>_<variant>.json
+        and have the registration step read them.
+
+P2-17 C++ preprocessing module                                  [READ] Effort M
+WHERE   cpp/preprocessing/preprocess.cpp, setup.py
+WHAT    - Does only `out = in / 255.0`; no resize, no mean/std normalisation, no
+          HWC->CHW transpose.
+        - Returns a FLATTENED 1-D array (shape information is lost).
+        - Ignores strides/contiguity (wrong results for non-contiguous inputs);
+          no dtype/forcecast flags; unused `<iostream>`.
+        - Does not release the GIL, so it blocks other Python threads.
+        - Never built (not in Dockerfile/CI), never imported, no tests, no
+          comparison against NumPy.
+FIX     Implement fused resize (bilinear) + normalise (x/255 - mean)/std +
+        HWC->CHW, take `py::array::c_style | py::array::forcecast`, return
+        shaped output, release the GIL (`py::gil_scoped_release`), build in
+        Docker/CI (optional wheel), add a Python fallback, and BENCHMARK against
+        NumPy/OpenCV/Pillow. If it is not faster, say so and drop the claim.
+
+
+================================================================================
+P3 -- ROBUSTNESS, SECURITY, PERFORMANCE
+================================================================================
+
+P3-1  Config consistency and failure modes                      [READ] Effort S
+WHERE   app/core/config.py, config.yaml, docker-compose.yml
+WHAT    - config.yaml URLs use `localhost`; inside the compose network the API
+          must use `postgres` / `redis`, so even after P0-1 the containers cannot
+          connect to their dependencies.
+        - load_config() runs at import time (side effect; hard to test); an empty
+          YAML makes `AppConfig(**None)` raise TypeError; validation errors give
+          raw pydantic traces.
+        - The `slo` section is loaded but unused; `server.host/port` unused.
+        - Hardcoded fallback defaults differ from YAML defaults.
+        - `class Config:` is the deprecated pydantic-v2 style (`model_config`).
+FIX     Allow env overrides (DATABASE_URL, REDIS_URL) layered over YAML; call
+        load_config() explicitly in lifespan; validate with clear errors; one
+        source of default values (the pydantic models).
+
+P3-2  Logging problems                                          [RAN]  Effort S
+WHERE   app/core/logging.py lines 7-31
+WHAT    - `logger.exception("boom")` output has NO traceback: exc_info is
+          excluded from the JSON and never formatted (verified).
+        - `json.dumps` raises TypeError on a non-serialisable `extra` value
+          (verified), which makes the log line disappear (Python prints
+          "--- Logging error ---" to stderr instead).
+        - No request/correlation ID, so lines from one request cannot be tied
+          together; timestamp format is not ISO-8601/UTC.
+FIX     Add `if record.exc_info: log_record["exc_info"] = self.formatException(
+        record.exc_info)`; use `json.dumps(..., default=str)`; emit ISO UTC
+        timestamps; add a middleware that sets a request-id contextvar included in
+        every log record (and returned in the response header).
+
+P3-3  Security: no authentication, limits, or hardening         [READ] Effort M
+WHAT    - No auth/API keys, no rate limiting, no max request/body size, no input
+          validation for images (decompression bombs).
+        - Planned `/chaos/inject` would let anyone slow the service: it must be
+          disabled in production (feature flag/admin auth).
+        - Postgres/Redis ports published on the host; hard-coded `postgres:
+          postgres` credentials in compose and config.yaml; Grafana default
+          credentials.
+        - Docker image runs as root; `pip install -e .` in production image.
+        - Model files from untrusted sources: torch.load/pickle risk (use
+          `weights_only=True`, checksum artifacts).
+FIX     API-key dependency + slowapi/limiter; `client_max_size`; image size/pixel
+        limits; secrets from env/secret store; do not publish DB ports;
+        non-root user in Docker; verify artifact hashes.
+
+P3-4  Docker image and compose quality                          [READ] Effort M
+WHERE   Dockerfile, docker-compose.yml
+WHAT    - Full `torch` from PyPI pulls CUDA wheels (multi-GB) even for CPU
+          serving; no .dockerignore (copies .git, tests, caches); no multi-stage
+          build; no HEALTHCHECK; one uvicorn worker.
+        - Compose: `depends_on` waits for container start, not readiness (no
+          healthchecks, `condition: service_healthy`), no restart policies, no
+          named volumes (Postgres data lost on `down -v`), `version:` key is
+          obsolete, no Grafana datasource/dashboard provisioning (the README
+          promises dashboards), scrape path /metrics missing (P1-6).
+        - Makefile uses legacy `docker-compose`; `.PHONY` lists targets that do
+          not exist (benchmark, load-test, metrics, report).
+FIX     CPU torch wheels (`--index-url https://download.pytorch.org/whl/cpu`),
+        multi-stage build, .dockerignore, healthchecks + `service_healthy`,
+        volumes, provisioned Grafana dashboards (JSON in monitoring/grafana),
+        `docker compose` v2 syntax, real Makefile targets.
+
+P3-5  Health checks do not check health                         [READ] Effort S
+WHERE   app/main.py lines 19-21
+WHAT    /health always returns ok even if models are unloaded, Postgres/Redis are
+        down, or breakers are open. `model_health` gauge never reflects reality.
+FIX     /health/live (process up) and /health/ready (models loaded + DB/cache
+        reachable). Use the readiness endpoint for Docker/Kubernetes probes.
+
+P3-6  Concurrency model and thread oversubscription             [READ] Effort M
+WHERE   queue.py line 66; scheduler.py line 35
+WHAT    `run_in_executor(None, ...)` uses the default thread pool shared by
+        everything (including other models), and the sizes interact with
+        PyTorch/ORT intra-op thread pools -> CPU oversubscription and noisy
+        latency. docs/tradeoffs.md says ThreadPoolExecutor but a dedicated pool
+        is not created.
+FIX     Create dedicated executors per model/device sized to the hardware; set
+        torch/ORT thread counts accordingly; consider multiple worker processes
+        for multi-core CPUs (each owning its models).
+
+P3-7  Preprocessing/postprocessing missing from the pipeline    [READ] Effort M
+WHAT    No decode (JPEG), resize/crop, ImageNet mean/std normalisation, or
+        postprocess (softmax, top-k, class labels). The model returns raw logits
+        for a tensor nobody constructs. Result validator in the architecture
+        diagram does not exist (NaN/Inf checks, output shape).
+FIX     Implement `preprocess()` (C++ with Python fallback) and `postprocess()`
+        with label mapping; add a result validator and count failures.
+
+P3-8  Timeouts and cancellation                                 [READ] Effort S
+WHAT    No end-to-end request timeout; a client that disconnects keeps its
+        request in the queue; latency_budget_ms is not enforced anywhere (only
+        used for scoring).
+FIX     `asyncio.wait_for` with the remaining budget; check client disconnect;
+        drop expired requests before execution; return 504 with timings.
+
+P3-9  Model lifecycle: warm-up, hot reload, memory              [READ] Effort M
+WHAT    load_model is synchronous and blocks the loop; no zero-downtime version
+        swap; unload does not remove state; no memory accounting (each model
+        copy per worker); warmup only batch 1 (first big batch pays extra cost).
+FIX     Load in a thread at startup; implement blue/green swap; warm up with the
+        max batch size; expose model_load_time metric (defined but unused).
+
+P3-10 Profiler is unused and not concurrency-safe               [READ] Effort S
+WHERE   app/core/profiler.py
+WHAT    Never instantiated; a single instance cannot safely be shared across
+        requests; `stop()` of an unstarted segment silently does nothing.
+FIX     One Profiler per request (store in request.state), feed its timings into
+        metrics and the response body; or replace with tracing spans.
+
+P3-11 Histogram bucket and label design                         [READ] Effort S
+WHERE   app/observability/metrics.py
+WHAT    Default buckets (5 ms min) are too coarse for sub-10 ms inference;
+        several metrics have unused labels; `inference_requests_total` has six
+        labels (cardinality is fine here, but keep model/version sets bounded).
+FIX     Custom buckets; document the labels; add exemplars/trace ids if desired.
+
+P3-12 Version/ID handling                                       [READ] Effort S
+WHAT    `UNIQUE(model_name, version)` plus a status string, no enum/CHECK
+        constraint (typos like 'ACTVE' become valid); `created_at` TIMESTAMP
+        without time zone; router returns a RealDictRow with non-JSON-serialisable
+        datetimes.
+FIX     CHECK constraint or enum for status; TIMESTAMPTZ; response models that
+        serialise cleanly.
+
+P3-13 CLI is mostly stubs                                       [READ] Effort M
+WHERE   app/cli.py
+WHAT    Every command except `chaos run` only prints text. `models list` prints a
+        hard-coded list; `system health` prints "OK" without checking anything;
+        `chaos run` uses `subprocess.run(["python", "chaos/chaos_tests.py"])`
+        with a relative path (breaks outside the repo root) and ignores the exit
+        code; `models benchmark <name>` requires an argument but the README
+        calls `benchmark run`.
+FIX     Implement each command against real code (list from registry; benchmark
+        via scripts; health via /health/ready; deployment commands via registry
+        operations) or delete the unimplemented ones. Return non-zero exit codes
+        on failure.
+
+P3-14 Chaos tests are not tests                                 [READ] Effort M
+WHERE   chaos/chaos_tests.py
+WHAT    Calls /chaos/inject and /v1/inference that do not exist; contains no
+        assertions; swallows failures; sends no input data.
+FIX     After the endpoint exists, write real scenarios with assertions:
+        (1) inject delay -> breaker opens after N failures; (2) breaker OPEN ->
+        fallback served within budget; (3) recovery -> half-open -> closed;
+        (4) canary with injected errors -> automatic rollback happens within X s.
+        Guard the injection endpoint behind an env flag.
+
+
+================================================================================
+P4 -- TESTS, DOCS, TOOLING, HYGIENE
+================================================================================
+
+P4-1  Test coverage is almost zero                              [READ] Effort L
+WHAT    Only two test files (health/config; PyTorch backend + manager). Nothing
+        covers batching, scoring/routing, canary, rollback, circuit breaker,
+        retry/fallback, registry, ONNX backend, export equivalence, CLI, API.
+        Five test packages (component, e2e, integration, model, performance) are
+        empty.
+FIX     Priority unit tests (no network/GPU needed, use fakes):
+          - scoring: table-driven cases incl. over-budget and missing metadata
+          - circuit breaker: all transitions with an injectable clock
+          - retry: attempt counts, delay sequence (patch sleep/random)
+          - canary: with a seeded RNG assert ~5% over 10k draws
+          - rollback: both thresholds and boundary values (== 1.25x)
+          - batcher: ordering, multi-row requests, timeout flush, failures,
+            shutdown, back-pressure
+        Integration: registry against a Postgres service container.
+        E2E: TestClient/httpx against the full app with a tiny fake model.
+        Performance: pytest-benchmark or Locust smoke in CI (non-blocking).
+
+P4-2  Existing tests need network and are slow                  [READ] Effort S
+WHERE   tests/unit/test_inference.py
+WHAT    Downloads real resnet18 weights each CI run; no marker to skip; uses
+        unused imports (`pytest`, `numpy`).
+FIX     Add `@pytest.mark.slow`/`model`, cache weights in CI, or use a tiny
+        random-weights model for unit tests.
+
+P4-3  pytest configuration missing                              [READ] Effort S
+WHAT    pytest-asyncio is installed but no `asyncio_mode`; no `testpaths`,
+        markers, or coverage settings.
+FIX     Add [tool.pytest.ini_options] (asyncio_mode="auto", markers, testpaths,
+        addopts="--cov=app --cov-report=term-missing").
+
+P4-4  CI workflow quality                                       [READ] Effort S
+WHERE   .github/workflows/*.yml
+WHAT    Uses older actions (checkout@v3, setup-python@v4); no pip caching; docker
+        workflow only builds on push to main (not on pull requests) and uses no
+        build cache; no coverage upload; one Python version only; tests download
+        weights each run; no matrix.
+FIX     Update actions, `cache: pip`, add PR trigger for docker build, a
+        Postgres/Redis service for integration tests, separate fast and slow test
+        jobs.
+
+P4-5  Documentation is thin and inconsistent                    [READ] Effort M
+WHERE   docs/architecture.md, docs/tradeoffs.md, README.md
+WHAT    architecture.md's diagram differs from the README's (no breaker, canary,
+        batching); tradeoffs.md mentions a `ThreadPoolExecutor` that is not
+        created; no sequence diagram; no API docs (OpenAPI examples); no
+        runbook for rollback/canary; no explanation of config keys.
+FIX     One accurate architecture diagram; a request sequence diagram; config
+        reference; decision records (ADRs) for ONNX vs PyTorch, batching defaults,
+        registry choice, canary approach.
+
+P4-6  Load test file is misleading                              [READ] Effort S
+WHERE   load_tests/locustfile.py
+WHAT    Task `infer_canary` is just a different model (resnet18) -- it does not
+        exercise canary routing; payload contains no input image; no assertions
+        or SLO thresholds; the results are not saved.
+FIX     Send real inputs; test stable/canary through tier metadata; fail the run
+        if P95 > SLO; record results (CSV/HTML) and put them in the README.
+
+P4-7  Makefile and developer experience                         [READ] Effort S
+WHAT    Targets referenced but missing; no `make run`/`dev`; no pre-commit
+        config (ruff/black/mypy) to prevent P0-2..4 recurring.
+FIX     Add `run`, `dev`, `benchmark`, `load-test`, `build-models`; add
+        .pre-commit-config.yaml.
+
+P4-8  Deprecated APIs                                           [READ] Effort S
+WHAT    `@app.on_event`, `pretrained=True`, pydantic `class Config`,
+        `asyncio.get_event_loop()`, `asyncio.iscoroutinefunction` (deprecated in
+        3.14; use `inspect.iscoroutinefunction`).
+FIX     lifespan, `weights=`, `model_config = SettingsConfigDict(...)`,
+        `get_running_loop()`, `inspect.iscoroutinefunction`.
+
+P4-9  Type hints and style                                      [READ] Effort S
+WHAT    Many functions lack return annotations; `Dict[str, Any]` used where
+        TypedDicts/dataclasses/pydantic models would be safer (registry rows,
+        metrics dicts); redundant comments in logging.py (a stream-of-thought
+        comment block).
+FIX     Add types, define a `ModelRecord` dataclass instead of raw dict rows,
+        clean up comments.
+
+P4-10 Error taxonomy                                            [READ] Effort S
+WHAT    Mixed ValueError/RuntimeError/KeyError for domain problems; no mapping to
+        HTTP status codes.
+FIX     Define exceptions (ModelNotFound, NoActiveModel, BudgetExceeded,
+        BackendUnavailable, QueueFull) and register FastAPI exception handlers.
+
+P4-11 Reproducibility of results                                [READ] Effort S
+WHAT    Random inputs for warmup/benchmarks without fixed seeds; no recording of
+        library versions/hardware in outputs.
+FIX     Seed RNGs; include environment info (CPU, torch/ORT versions) in
+        benchmark JSON.
+
+P4-12 Missing project metadata files                            [READ] Effort S
+WHAT    LICENSE, CONTRIBUTING (optional), CHANGELOG, CODE of conduct unnecessary
+        for a portfolio repo but LICENSE and a clear "Status" are expected.
+
+P4-13 Naming and layout nits                                    [READ] Effort S
+WHAT    Repo name has triple dashes (`inferX---Inference-...`), awkward in URLs
+        and clone commands; README says `cd inferx`.
+FIX     Consider renaming to `inferx`; update remotes and README commands.
+
+
+================================================================================
+SECTION 12 -- SUGGESTED ORDER OF WORK
+================================================================================
+
+OPTION A -- ONE DAY (maximum credibility per hour)
+  Hour 1    P0-1..P0-5: fix Dockerfile, ruff, black, mypy, packaging; push; CI is
+            green.
+  Hour 2    P0-7 + P0-9: make README honest (status table), About/topics,
+            LICENSE.
+  Hours 3-5 P1-1, P1-2, P1-3 (minimum slice): lifespan + one ONNX/PyTorch model
+            loaded + POST /v1/inference through BatchScheduler. Register a model
+            via a seed script (P1-4 minimal).
+  Hour 6    P1-6: /metrics + record latency/queue/batch metrics.
+  Hour 7    P2-1 (batcher multi-row bug) + a unit test; P2-13 (half-open fix) +
+            test.
+  Hour 8    P0-8: run benchmarks and put the table in the README. Update the
+            README status.
+
+OPTION B -- THREE DAYS (a defensible "platform")
+  Day 1     Everything in Option A.
+  Day 2     P1-5 (compose routers), P1-9 (apply breaker/retry/fallback), P2-8/9
+            (hard budget filter, accuracy_priority, health term), P2-10 (pool +
+            caching of active models), P1-8 (Redis cache), P1-7 (tracing),
+            P3-2 (logging), P3-5 (readiness).
+  Day 3     P1-10 + P2-11 (rollback loop with sample-size safeguards), P3-14
+            (real chaos tests with assertions), P4-1 (unit tests for all
+            components), P2-16 (accuracy evaluation after quantization),
+            README/docs/diagram refresh (P4-5), Grafana dashboard.
+
+IF YOU ONLY HAVE A FEW HOURS BEFORE THE INTERVIEW
+  Do P0-1..P0-7 (green CI + honest README), P2-1 and P2-13 (you can then say you
+  found and fixed bugs in your own components), and prepare to explain the rest
+  as the roadmap. Use InferX_Interview_Prep.txt for the explanations.
+
+
+================================================================================
+SECTION 13 -- FLAT CHECKLIST
+================================================================================
+P0  [ ] P0-1 Dockerfile order           [ ] P0-2 ruff        [ ] P0-3 black
+    [ ] P0-4 mypy                       [ ] P0-5 packaging   [ ] P0-6 deps/pins
+    [ ] P0-7 README honesty             [ ] P0-8 benchmarks  [ ] P0-9 repo hygiene
+P1  [ ] P1-1 /v1/inference endpoint     [ ] P1-2 lifespan/wiring
+    [ ] P1-3 registry->backend mapping  [ ] P1-4 build+register+activate models
+    [ ] P1-5 compose routers            [ ] P1-6 metrics recorded + /metrics
+    [ ] P1-7 tracing                    [ ] P1-8 Redis cache
+    [ ] P1-9 apply resilience           [ ] P1-10 rollback loop + data
+P2  [ ] P2-1 batcher multi-row bug      [ ] P2-2 wait from enqueue
+    [ ] P2-3 no idle wait               [ ] P2-4 poisoned batch
+    [ ] P2-5 hanging futures            [ ] P2-6 back-pressure
+    [ ] P2-7 batcher code issues        [ ] P2-8 hard budget filter
+    [ ] P2-9 unused config/weights      [ ] P2-10 registry connections
+    [ ] P2-11 canary/rollback stats     [ ] P2-12 retry/fallback semantics
+    [ ] P2-13 breaker half-open         [ ] P2-14 ONNX dtype/GPU
+    [ ] P2-15 PyTorch backend           [ ] P2-16 export/quantize/benchmark
+    [ ] P2-17 C++ module
+P3  [ ] P3-1 config                     [ ] P3-2 logging
+    [ ] P3-3 security                   [ ] P3-4 docker/compose
+    [ ] P3-5 health checks              [ ] P3-6 concurrency/threads
+    [ ] P3-7 pre/postprocessing         [ ] P3-8 timeouts
+    [ ] P3-9 model lifecycle            [ ] P3-10 profiler
+    [ ] P3-11 metric buckets            [ ] P3-12 schema/status constraints
+    [ ] P3-13 CLI                       [ ] P3-14 chaos tests
+P4  [ ] P4-1 tests                      [ ] P4-2 slow tests
+    [ ] P4-3 pytest config              [ ] P4-4 CI quality
+    [ ] P4-5 docs                       [ ] P4-6 load test
+    [ ] P4-7 Makefile/pre-commit        [ ] P4-8 deprecations
+    [ ] P4-9 typing                     [ ] P4-10 error taxonomy
+    [ ] P4-11 reproducibility           [ ] P4-12 metadata files
+    [ ] P4-13 naming
+
+================================================================================
+END OF DOCUMENT
+================================================================================

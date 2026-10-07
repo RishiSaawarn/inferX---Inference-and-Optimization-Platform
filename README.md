@@ -3,13 +3,28 @@
 InferX is a comprehensive, production-grade AI inference platform designed for serving multiple versions of machine learning models with dynamic, intelligent request routing. Built for high performance and resilience, InferX acts as an advanced API Gateway and model serving layer capable of dynamically balancing strict latency budgets against model accuracy and hardware constraints.
 
 ## Table of Contents
-1. [Core Features](#core-features)
-2. [Architecture Overview](#architecture-overview)
-3. [Intelligent Model Routing](#intelligent-model-routing)
-4. [Performance & Optimization](#performance--optimization)
-5. [Resilience & Deployment](#resilience--deployment)
-6. [Observability](#observability)
-7. [Quick Start & CLI](#quick-start--cli)
+1. [Project Status](#project-status)
+2. [Core Features](#core-features)
+3. [Architecture Overview](#architecture-overview)
+4. [Intelligent Model Routing](#intelligent-model-routing)
+5. [Performance & Optimization](#performance--optimization)
+6. [Resilience & Deployment](#resilience--deployment)
+7. [Observability](#observability)
+8. [Quick Start & CLI](#quick-start--cli)
+
+---
+
+## Project Status
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| **Multi-Runtime Support** | 🔨 In Progress | PyTorch API complete, ONNX integration pending. |
+| **Dynamic Request Routing** | 🔨 In Progress | Router skeleton built; scoring and endpoint integration in progress. |
+| **Dynamic Batching** | 🔨 In Progress | Scheduler built, awaiting API integration. |
+| **Cache (Redis)** | 📋 Planned | Coming in Phase 2. |
+| **Tracing (OpenTelemetry)** | 📋 Planned | Coming in Phase 2. |
+| **Chaos Testing** | 📋 Planned | Coming in Phase 4. |
+| **Automatic Rollbacks** | 📋 Planned | Evaluation logic in progress. |
 
 ---
 
@@ -20,8 +35,8 @@ InferX is a comprehensive, production-grade AI inference platform designed for s
 - **Dynamic Request Routing:** Automatically routes incoming requests to the optimal model version based on configurable latency budgets, system load, and real-time model health.
 - **Dynamic Batching:** Automatically groups concurrent requests into execution batches to maximize throughput.
 - **Automated Deployments:** Built-in canary traffic splitting and automatic rollbacks if error rates or latency SLOs are breached.
-- **Deep Observability:** Granular profiling, Prometheus metrics, and OpenTelemetry distributed tracing built directly into the request lifecycle.
-- **Chaos Engineering:** In-built chaos testing framework to validate circuit breakers and system resilience under degraded conditions.
+- **Deep Observability:** Granular profiling, Prometheus metrics (planned), and OpenTelemetry distributed tracing (planned).
+- **Chaos Engineering:** In-built chaos testing framework (planned) to validate circuit breakers and system resilience under degraded conditions.
 
 ---
 
@@ -128,8 +143,8 @@ The repository includes dedicated scripts to take a base PyTorch model and optim
 3. **Quantization:** Applies dynamic INT8 quantization to the ONNX graph.
 4. **Benchmarking:** Automatically measures FP32 vs INT8 P50/P95 latencies, throughput, and memory footprint.
 
-### C++ Preprocessing
-To eliminate Python overhead in the critical path, image resizing and tensor normalization are implemented in C++ and exposed to the Python runtime via `pybind11`.
+### C++ Preprocessing (Planned)
+To eliminate Python overhead in the critical path, image resizing and tensor normalization are planned to be implemented in C++ and exposed to the Python runtime via `pybind11`. (Currently using Python fallbacks).
 
 ### Dynamic Batching
 Inference execution is highly parallelizable. The `BatchScheduler` intercepts incoming requests, pauses them for up to `max_wait_ms`, concatenates them into a single tensor, and dispatches the batch to the hardware, dramatically increasing total system throughput at the cost of a few milliseconds of baseline latency.
@@ -166,11 +181,10 @@ Ensure you have Docker and Docker Compose installed.
 
 ```bash
 # Clone the repository
-git clone <your-repo>
-cd inferx
+git clone https://github.com/RishiSaawarn/inferX---Inference-and-Optimization-Platform.git
+cd inferX---Inference-and-Optimization-Platform
 
-# Spin up the entire platform (API, Postgres, Redis, Prometheus, Grafana)
-# Note: The Docker build will automatically download the pretrained model weights.
+# Note: The platform is actively under development, and the stack below will be fully functional soon.
 docker-compose up -d --build
 ```
 
