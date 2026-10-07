@@ -1,7 +1,6 @@
 from typing import Any, Optional
 
 import numpy as np
-import onnxruntime as ort
 
 from app.inference.base import InferenceBackend
 
@@ -10,9 +9,10 @@ class ONNXBackend(InferenceBackend):
     def __init__(self, model_path: str, device: str = "cpu"):
         self.model_path = model_path
         self.device = device
-        self.session: Optional[ort.InferenceSession] = None
+        self.session = None
 
     def load(self) -> None:
+        import onnxruntime as ort
         providers = ["CPUExecutionProvider"]
         if (
             self.device == "cuda"
@@ -43,6 +43,9 @@ class ONNXBackend(InferenceBackend):
         # P2-14: Properly handle CUDA tensors and cast to float32
         if hasattr(input_data, "detach"):
             input_data = input_data.detach().cpu().numpy().astype(np.float32)
+        elif isinstance(input_data, list) and all(isinstance(x, np.ndarray) for x in input_data):
+            # Form (batch_size, ...) by concatenating along axis 0
+            input_data = np.concatenate(input_data, axis=0).astype(np.float32)
         elif not isinstance(input_data, np.ndarray):
             input_data = np.array(input_data, dtype=np.float32)
         elif input_data.dtype != np.float32:

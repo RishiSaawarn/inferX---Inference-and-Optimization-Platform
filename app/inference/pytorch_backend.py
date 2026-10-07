@@ -43,9 +43,22 @@ class PyTorchBackend(InferenceBackend):
     def predict(self, input_data: Any) -> Any:
         if self.model is None:
             raise RuntimeError("Model not loaded")
+            
+        import numpy as np
+        if isinstance(input_data, list) and all(isinstance(x, np.ndarray) for x in input_data):
+            input_data = np.concatenate(input_data, axis=0)
+            
         # Ensure input is a tensor and on the correct device
         if not isinstance(input_data, torch.Tensor):
-            raise TypeError("Input data must be a torch.Tensor")
+            try:
+                input_data = torch.from_numpy(np.array(input_data))
+            except Exception:
+                raise TypeError("Input data must be convertible to torch.Tensor")
+                
+        # Make sure input has no extra batch dimensions if fed a list of standard batches
+        if input_data.dim() == 5 and input_data.shape[1] == 1:
+            input_data = input_data.squeeze(1)
+            
         input_data = input_data.to(self.device)
         with torch.inference_mode():
             output = self.model(input_data)

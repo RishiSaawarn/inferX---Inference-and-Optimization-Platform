@@ -72,6 +72,6 @@ def health_live():
     return {"status": "ok", "env": settings.app_env}
     
 @app.get("/health/ready")
-def health_ready(request: FastAPI):
+def health_ready():
     # TODO: P3-5 Readiness
     return {"status": "ok"}
