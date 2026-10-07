@@ -11,6 +11,7 @@ from app.inference.manager import ModelManager
 from app.inference.backend_factory import BackendFactory
 from app.batching.scheduler import BatchScheduler
 from app.deployment.rollback import RollbackEvaluator
+from app.cache.cache import ResponseCache
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -23,6 +24,12 @@ async def lifespan(app: FastAPI):
     registry = ModelRegistry()
     model_router = ModelRouter(registry)
     manager = ModelManager()
+    
+    # Load config to correctly populate settings before cache uses them.
+    from app.core.config import load_config
+    load_config()
+    
+    response_cache = ResponseCache()
     
     active_rows = registry.get_all_active_models()
     for row in active_rows:
@@ -45,6 +52,7 @@ async def lifespan(app: FastAPI):
     app.state.manager = manager
     app.state.batch_scheduler = batch_scheduler
     app.state.rollback_evaluator = rollback_evaluator
+    app.state.response_cache = response_cache
     
     yield
     

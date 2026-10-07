@@ -24,8 +24,11 @@ async def test_batch_execution():
 @pytest.mark.asyncio
 async def test_queue_full():
     queue = BatchQueue(processor_callback=lambda x: x, max_queue_size=1)
-    # Don't start it so it fills up
     
-    await queue.enqueue(1)
+    t = asyncio.create_task(queue.enqueue(1))
+    await asyncio.sleep(0.01) # let it process put_nowait
+    
     with pytest.raises(QueueFull):
         await queue.enqueue(2)
+        
+    t.cancel()

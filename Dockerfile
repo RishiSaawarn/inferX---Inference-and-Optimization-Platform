@@ -6,7 +6,10 @@ WORKDIR /app
 COPY pyproject.toml .
 # We'll copy source to avoid the package directory issue
 COPY . .
-# Install without deps first to cache them, or just install normal
+# Install build dependencies explicitly first to bypass DNS hiccups in isolated envs
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel
+
+# Install the project and dependencies
 RUN pip install --no-cache-dir .
 
 # Download models during image build to bake them into the image

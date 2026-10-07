@@ -15,7 +15,6 @@ from app.core.profiler import RequestProfiler
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-response_cache = ResponseCache()
 
 @router.post("/inference", response_model=InferenceResponse)
 async def predict(request: Request, payload: InferenceRequest):
@@ -46,12 +45,14 @@ async def predict(request: Request, payload: InferenceRequest):
     model_id = f"{best_candidate['model_name']}:{best_candidate['version']}"
     
     # Check cache first
-    cached_result = await response_cache.get(model_id, payload.input_data)
-    if cached_result:
-        cached_result["timings"]["total_ms"] = (time.monotonic() - start_time) * 1000.0
-        cached_result["cache_hit"] = True
-        record_api_time(payload.model, "success", time.monotonic() - start_time)
-        return InferenceResponse(**cached_result)
+    response_cache = getattr(app_state, "response_cache", None)
+    if response_cache:
+        cached_result = await response_cache.get(model_id, payload.input_data)
+        if cached_result:
+            cached_result["timings"]["total_ms"] = (time.monotonic() - start_time) * 1000.0
+            cached_result["cache_hit"] = True
+            record_api_time(payload.model, "success", time.monotonic() - start_time)
+            return InferenceResponse(**cached_result)
         
     if not hasattr(app_state, "batch_scheduler"):
         raise HTTPException(status_code=503, detail="Scheduler not initialized")
@@ -112,8 +113,9 @@ async def predict(request: Request, payload: InferenceRequest):
     )
     
     # Save to cache asynchronously
-    import asyncio
-    asyncio.create_task(response_cache.set(model_id, payload.input_data, resp.dict()))
+    if response_cache:
+        import asyncio
+        asyncio.create_task(response_cache.set(model_id, payload.input_data, resp.dict()))
     
     record_api_time(payload.model, "success", total_time_ms / 1000.0)
     record_request(payload.model, "success")
