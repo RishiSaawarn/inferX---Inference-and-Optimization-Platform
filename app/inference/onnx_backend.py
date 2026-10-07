@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Optional
 
 import numpy as np
 import onnxruntime as ort
@@ -10,7 +10,7 @@ class ONNXBackend(InferenceBackend):
     def __init__(self, model_path: str, device: str = "cpu"):
         self.model_path = model_path
         self.device = device
-        self.session = None
+        self.session: Optional[ort.InferenceSession] = None
 
     def load(self) -> None:
         providers = ["CPUExecutionProvider"]
@@ -39,12 +39,14 @@ class ONNXBackend(InferenceBackend):
         if self.session is None:
             raise RuntimeError("Model not loaded")
         input_name = self.session.get_inputs()[0].name
-        if not isinstance(input_data, np.ndarray):
-            # Try converting assuming it's a torch tensor or compatible format
-            try:
-                input_data = input_data.numpy()
-            except AttributeError:
-                input_data = np.array(input_data, dtype=np.float32)
+        
+        # P2-14: Properly handle CUDA tensors and cast to float32
+        if hasattr(input_data, "detach"):
+            input_data = input_data.detach().cpu().numpy().astype(np.float32)
+        elif not isinstance(input_data, np.ndarray):
+            input_data = np.array(input_data, dtype=np.float32)
+        elif input_data.dtype != np.float32:
+            input_data = input_data.astype(np.float32)
 
         output = self.session.run(None, {input_name: input_data})
         return output[0]

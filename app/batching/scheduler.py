@@ -27,7 +27,13 @@ class BatchScheduler:
             backend = self.manager.get_model(model_id)
             if not backend:
                 raise KeyError(f"Model {model_id} not loaded in manager")
-            queue = BatchQueue(backend, self.max_batch_size, self.max_wait_ms)
+            # Provide a callback that executes batches safely via manager
+            async def _executor(reqs):
+                loop = asyncio.get_running_loop()
+                # Run the synchronous prediction inside an executor (though ideally backends have async predict or it's wrapped)
+                return await loop.run_in_executor(None, backend.predict, reqs)
+            
+            queue = BatchQueue(_executor, self.max_batch_size, self.max_wait_ms)
             queue.start()
             self.queues[model_id] = queue
             logger.info(f"Created batch queue for model {model_id}")
@@ -40,7 +46,9 @@ class BatchScheduler:
             backend = self.manager.get_model(model_id)
             if not backend:
                 raise KeyError(f"Model {model_id} not found")
-            loop = asyncio.get_event_loop()
+            if backend.health() != "HEALTHY":
+                raise KeyError(f"Model {model_id} currently unavailable")
+            loop = asyncio.get_running_loop()
             return await loop.run_in_executor(None, backend.predict, input_data)
 
         queue = self.get_or_create_queue(model_id)

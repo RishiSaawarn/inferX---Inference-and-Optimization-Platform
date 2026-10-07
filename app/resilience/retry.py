@@ -1,40 +1,36 @@
 import asyncio
 import logging
-from collections.abc import Callable
-from typing import Any
+import random
+import inspect
+from typing import Callable, Any
 
 logger = logging.getLogger(__name__)
 
+# P2-12: List of exceptions safe to retry
+TRANSIENT_EXCEPTIONS = (
+    asyncio.TimeoutError,
+    ConnectionError,
+    # Add other network/transient exceptions
+)
 
-async def execute_with_retry(
-    func: Callable,
-    *args,
-    max_retries: int = 3,
-    base_delay: float = 0.1,
-    max_delay: float = 2.0,
-    **kwargs,
-) -> Any:
-    import random
-
-    attempts = 0
-    while attempts <= max_retries:
+async def with_retry(func: Callable, max_retries: int = 3, base_delay: float = 0.5) -> Any:
+    for attempt in range(max_retries + 1):
         try:
-            if asyncio.iscoroutinefunction(func):
-                return await func(*args, **kwargs)
+            if inspect.iscoroutinefunction(func):
+                return await func()
             else:
-                return func(*args, **kwargs)
-        except Exception as e:
-            attempts += 1
-            if attempts > max_retries:
-                logger.error(f"Failed after {max_retries} retries: {e}")
+                return func()
+        except TRANSIENT_EXCEPTIONS as e:
+            if attempt == max_retries:
+                logger.error(f"Action failed after {max_retries} retries: {e}")
                 raise
-
-            # Exponential backoff with jitter
-            delay = min(base_delay * (2 ** (attempts - 1)), max_delay)
-            jitter = random.uniform(0, delay * 0.1)
-            sleep_time = delay + jitter
-
-            logger.warning(
-                f"Attempt {attempts} failed: {e}. Retrying in {sleep_time:.2f}s..."
-            )
-            await asyncio.sleep(sleep_time)
+                
+            # P2-12: Full Jitter
+            max_delay = base_delay * (2 ** attempt)
+            delay = random.uniform(0, max_delay)
+            logger.warning(f"Transient error: {e}. Retrying {attempt+1}/{max_retries} after {delay:.2f}s")
+            await asyncio.sleep(delay)
+        except Exception as e:
+            # Non-transient exceptions bubble up immediately
+            logger.error(f"Non-transient error, failing immediately: {e}")
+            raise

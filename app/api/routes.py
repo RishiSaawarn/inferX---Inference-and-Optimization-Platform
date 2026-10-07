@@ -1,11 +1,18 @@
 import time
+import logging
+from typing import Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 from app.api.schemas import InferenceRequest, InferenceResponse, InferenceTimings
-import logging
+from app.observability.metrics import record_request, record_api_time, RESILIENCE_EVENTS
+from app.cache.cache import ResponseCache
+from app.resilience.retry import with_retry
+from app.resilience.fallback import execute_with_fallback
+from app.core.exceptions import BudgetExceeded
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+response_cache = ResponseCache()
 
 @router.post("/inference", response_model=InferenceResponse)
 async def predict(request: Request, payload: InferenceRequest):
@@ -35,36 +42,67 @@ async def predict(request: Request, payload: InferenceRequest):
 
     model_id = f"{best_candidate['model_name']}:{best_candidate['version']}"
     
-    # 2. Execution / Batching
+    # Check cache first
+    cached_result = await response_cache.get(model_id, payload.input_data)
+    if cached_result:
+        cached_result["timings"]["total_ms"] = (time.monotonic() - start_time) * 1000.0
+        cached_result["cache_hit"] = True
+        record_api_time(payload.model, "success", time.monotonic() - start_time)
+        return InferenceResponse(**cached_result)
+        
     if not hasattr(app_state, "batch_scheduler"):
         raise HTTPException(status_code=503, detail="Scheduler not initialized")
-
+        
+    # Execute with resilience patterns
     try:
-        # TODO: preprocessing (P3-7)
-        exec_start = time.monotonic()
+        # Define the execution block to be retried/fallback
+        async def _do_inference():
+            exec_start = time.monotonic()
+            raw_result = await app_state.batch_scheduler.predict_async(model_id, payload.input_data)
+            exec_ms = (time.monotonic() - exec_start) * 1000.0
+            return raw_result, exec_ms
+            
+        async def _fallback(exc: Exception):
+            RESILIENCE_EVENTS.labels(model_id=model_id, type="fallback").inc()
+            logger.warning(f"Fallback triggered for {model_id} due to {exc}")
+            # Mock fallback result
+            return {"class": "fallback", "score": 0.0}, 0.0
+            
+        # Protect with retry and fallback
+        result_tuple = await execute_with_fallback(
+            with_retry(_do_inference, max_retries=1, base_delay=0.1),
+            fallback_func=_fallback
+        )
         
-        raw_result = await app_state.batch_scheduler.predict_async(model_id, payload.input_data)
-        
-        exec_ms = (time.monotonic() - exec_start) * 1000.0
-        # TODO: postprocessing (P3-7)
+        raw_result, exec_ms = result_tuple
         
     except Exception as e:
         logger.error(f"Inference execution failed: {e}")
+        record_api_time(payload.model, "error", time.monotonic() - start_time)
         raise HTTPException(status_code=500, detail=str(e))
 
     total_time_ms = (time.monotonic() - start_time) * 1000.0
 
-    return InferenceResponse(
+    resp = InferenceResponse(
         model=best_candidate["model_name"],
         version=best_candidate["version"],
         backend=best_candidate.get("runtime", "unknown"),
         precision=best_candidate.get("precision", "unknown"),
-        predictions=[{"class": "unknown", "score": 1.0}],  # Mock until postprocessing is built
+        predictions=[raw_result] if isinstance(raw_result, dict) else [{"class": "unknown", "score": 1.0}],
         timings=InferenceTimings(
-            queue_ms=0.0,  # Will read from profiler/queue later
+            queue_ms=0.0,
             exec_ms=exec_ms,
             total_ms=total_time_ms
         ),
         cache_hit=False,
-        routed_to_canary=False
+        routed_to_canary=best_candidate.get("metadata", {}).get("tier") == "canary"
     )
+    
+    # Save to cache asynchronously
+    import asyncio
+    asyncio.create_task(response_cache.set(model_id, payload.input_data, resp.dict()))
+    
+    record_api_time(payload.model, "success", total_time_ms / 1000.0)
+    record_request(payload.model, "success")
+    
+    return resp

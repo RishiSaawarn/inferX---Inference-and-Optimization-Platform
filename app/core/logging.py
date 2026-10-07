@@ -1,70 +1,50 @@
-import json
 import logging
+import json
+import traceback
+import contextvars
+from datetime import datetime, timezone
+import uuid
 from typing import Any
 
-from app.core.config import settings
+request_id_ctx_var: contextvars.ContextVar[str] = contextvars.ContextVar("request_id", default="")
 
-
-class JSONFormatter(logging.Formatter):
+class JsonFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         log_record: dict[str, Any] = {
-            "timestamp": self.formatTime(record, self.datefmt),
+            "timestamp": datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat(),
             "level": record.levelname,
-            "message": record.getMessage(),
             "logger": record.name,
+            "message": record.getMessage(),
+            "request_id": request_id_ctx_var.get()
         }
+        
+        # P3-2: Handle extra args safely
+        if hasattr(record, "status"):
+            log_record["status"] = record.status
+        if hasattr(record, "env"):
+            log_record["env"] = record.env
+            
+        # P3-2: Fix traceback logging in JSON
+        if record.exc_info:
+            log_record["exc_info"] = self.formatException(record.exc_info)
+        elif record.exc_text:
+            log_record["exc_info"] = record.exc_text
 
-        # Add any extra fields passed in the log record's __dict__
-        # Specifically handling the 'extra' dict passed to logger methods
-        # However, standard logging puts extra keys directly into the record dict.
-        # We will extract keys that are not standard LogRecord keys.
+        # P3-2: stringify defaults to avoid unserializable objects crashing the logger
+        return json.dumps(log_record, default=str)
 
-        standard_keys = {
-            "name",
-            "msg",
-            "args",
-            "levelname",
-            "levelno",
-            "pathname",
-            "filename",
-            "module",
-            "exc_info",
-            "exc_text",
-            "stack_info",
-            "lineno",
-            "funcName",
-            "created",
-            "msecs",
-            "relativeCreated",
-            "thread",
-            "threadName",
-            "processName",
-            "process",
-            "taskName",
-        }
-
-        for key, value in record.__dict__.items():
-            if key not in standard_keys:
-                log_record[key] = value
-
-        return json.dumps(log_record)
-
-
-def setup_logging() -> None:
+def setup_logging(level: int = logging.INFO):
     logger = logging.getLogger()
-    logger.setLevel(settings.log_level.upper())
-
-    # Remove existing handlers
+    logger.setLevel(level)
+    
+    # Remove existing handlers to avoid duplicates
     for handler in logger.handlers[:]:
         logger.removeHandler(handler)
-
+        
     handler = logging.StreamHandler()
-    formatter = JSONFormatter()
-    handler.setFormatter(formatter)
+    handler.setFormatter(JsonFormatter())
     logger.addHandler(handler)
-
-    # Configure uvicorn loggers to use our formatter
-    for logger_name in ("uvicorn", "uvicorn.access", "uvicorn.error", "fastapi"):
-        l = logging.getLogger(logger_name)
-        l.handlers = [handler]
-        l.propagate = False
+    
+    # Silence third party noisy logs
+    logging.getLogger("urllib3").setLevel(logging.WARNING)
+    logging.getLogger("multipart").setLevel(logging.WARNING)
