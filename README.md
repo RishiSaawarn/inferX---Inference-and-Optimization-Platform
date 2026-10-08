@@ -18,13 +18,13 @@ InferX is a comprehensive, production-grade AI inference platform designed for s
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| **Multi-Runtime Support** | 🔨 In Progress | PyTorch API complete, ONNX integration pending. |
-| **Dynamic Request Routing** | 🔨 In Progress | Router skeleton built; scoring and endpoint integration in progress. |
-| **Dynamic Batching** | 🔨 In Progress | Scheduler built, awaiting API integration. |
-| **Cache (Redis)** | 📋 Planned | Coming in Phase 2. |
-| **Tracing (OpenTelemetry)** | 📋 Planned | Coming in Phase 2. |
-| **Chaos Testing** | 📋 Planned | Coming in Phase 4. |
-| **Automatic Rollbacks** | 📋 Planned | Evaluation logic in progress. |
+| **Multi-Runtime Support** | ✅ Implemented | PyTorch and ONNX bindings fully integrated. |
+| **Dynamic Request Routing** | ✅ Implemented | Weighted scoring maps budget, latency, and health logic. |
+| **Dynamic Batching** | ✅ Implemented | End-to-end integration blocking native limits properly via Queue. |
+| **Cache (Redis)** | ✅ Implemented | Central async caching layer connected and mapped. |
+| **Tracing (OpenTelemetry)** | ✅ Implemented | Instrumented via OTLP FastAPI mounts directly in lifespan. |
+| **Chaos Testing** | ✅ Implemented | Full cli suite implemented under `inferx chaos run`. |
+| **Automatic Rollbacks** | ✅ Implemented | `RollbackEvaluator` background thread fully active. |
 
 ---
 
@@ -35,8 +35,8 @@ InferX is a comprehensive, production-grade AI inference platform designed for s
 - **Dynamic Request Routing:** Automatically routes incoming requests to the optimal model version based on configurable latency budgets, system load, and real-time model health.
 - **Dynamic Batching:** Automatically groups concurrent requests into execution batches to maximize throughput.
 - **Automated Deployments:** Built-in canary traffic splitting and automatic rollbacks if error rates or latency SLOs are breached.
-- **Deep Observability:** Granular profiling, Prometheus metrics (planned), and OpenTelemetry distributed tracing (planned).
-- **Chaos Engineering:** In-built chaos testing framework (planned) to validate circuit breakers and system resilience under degraded conditions.
+- **Deep Observability:** Granular profiling, live Prometheus metrics, and OpenTelemetry distributed tracing integrated globally.
+- **Chaos Engineering:** In-built chaos testing framework (`inferx chaos`) to validate circuit breakers and system resilience under degraded conditions.
 
 ---
 
@@ -143,8 +143,8 @@ The repository includes dedicated scripts to take a base PyTorch model and optim
 3. **Quantization:** Applies dynamic INT8 quantization to the ONNX graph.
 4. **Benchmarking:** Automatically measures FP32 vs INT8 P50/P95 latencies, throughput, and memory footprint.
 
-### C++ Preprocessing (Planned)
-To eliminate Python overhead in the critical path, image resizing and tensor normalization are planned to be implemented in C++ and exposed to the Python runtime via `pybind11`. (Currently using Python fallbacks).
+### C++ Preprocessing
+To eliminate Python overhead in the critical path, image resizing and tensor normalization are implemented natively in C++ using `pybind11` as the `inferx_preprocess` library module.
 
 ### Dynamic Batching
 Inference execution is highly parallelizable. The `BatchScheduler` intercepts incoming requests, pauses them for up to `max_wait_ms`, concatenates them into a single tensor, and dispatches the batch to the hardware, dramatically increasing total system throughput at the cost of a few milliseconds of baseline latency.
@@ -184,8 +184,8 @@ Ensure you have Docker and Docker Compose installed.
 git clone https://github.com/RishiSaawarn/inferX---Inference-and-Optimization-Platform.git
 cd inferX---Inference-and-Optimization-Platform
 
-# Note: The platform is actively under development, and the stack below will be fully functional soon.
-docker-compose up -d --build
+# Start the full orchestration suite natively
+docker compose up -d --build
 ```
 
 ### Using the CLI
